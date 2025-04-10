@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from itertools import combinations
 from tqdm import tqdm
 import scipy.io
-from numba import jit
+# from numba import jit
 from joblib import Parallel, delayed
 import time
 import os
@@ -481,57 +481,48 @@ class CausalInference:
 
     def RDS_dimN(self, X_list, Y, t, time_interval):
         """
-        Generalized Regulation Detection Scoring function for any dimension N.
-        Based on the MATLAB implementation. 
-        Potential for numerical differences due to MATLAB's matrix operations and toolbox dependencies.
+        Generalized RDS (Regulation Detection Scoring) for dimension N.
         """
-        # Calculate the gradient of target variable
+        # Calculate gradient of target variable
         f = np.gradient(Y, time_interval, edge_order=1)
 
-        # Create meshgrids and differences for each cause
+        # Create meshgrids for causes and differences
         X_diffs = []
         for X in X_list:
             X_mesh, X_mesh_transpose = np.meshgrid(X, X)
             X_diffs.append(X_mesh_transpose - X_mesh)
 
-        # Create meshgrid for the target gradient
+        # Create meshgrid for target gradient
         f_mesh, f_mesh_transpose = np.meshgrid(f, f)
         f_diff = f_mesh_transpose - f_mesh
 
-        # Number of regulation types: 2^self._dimension
         num_types = 2**self._dimension
-
-        # Initialize scores array with zeros
         score_list = np.zeros((len(t), len(t), num_types))
-        
-        # Calculate base score (X_diffs product * f_diff)
-        base_score = f_diff
-        for X_diff in X_diffs:
-            base_score = base_score * X_diff
         
         # For each regulation type
         for i in range(num_types):
             # Convert type index to binary pattern
-            pattern = [(i >> j) & 1 for j in range(len(X_list))]
+            pattern = [(i >> j) & 1 for j in range(self._dimension)]
             
-            # Create conditions array for this regulation type
-            conditions = []
-            sign = 1  # Track the final sign for this regulation type
+            # Initialize combined mask for this regulation type
+            mask = np.ones_like(f_diff, dtype=bool)
+            base_score = f_diff.copy()
             
-            for idx, (bit, X_diff) in enumerate(zip(pattern, X_diffs)):
-                if bit == 0:  # Positive regulation
-                    conditions.append(X_diff >= 0)
-                else:  # Negative regulation
-                    conditions.append(X_diff < 0)
-                    sign *= -1  # Flip sign for each negative regulation (follows GOBI MATLAB logic)
-            
-            # Combine all conditions
-            combined_condition = conditions[0]
-            for cond in conditions[1:]:
-                combined_condition = combined_condition & cond
+            # Process each cause based on regulation type
+            for idx, (is_negative, X_diff) in enumerate(zip(pattern, X_diffs)):
+                if is_negative:
+                    # Negative regulation: X↓ => Y↑ or X↑ => Y↓
+                    condition = X_diff < 0
+                    base_score *= -X_diff  # Note the negative sign
+                else:
+                    # Positive regulation: X↑ => Y↑ or X↓ => Y↓
+                    condition = X_diff >= 0
+                    base_score *= X_diff
                 
-            # Apply score with proper sign (matching MATLAB implementation)
-            score_list[:, :, i] = np.where(combined_condition, sign * base_score, 0)
+                mask &= condition
+            
+            # Apply mask and store score
+            score_list[:, :, i] = np.where(mask, base_score, 0)
 
         t_1, t_2 = np.meshgrid(t, t)
         return score_list, t_1, t_2
@@ -1196,9 +1187,9 @@ class CausalFilter:
             'surrogate_results': self._surrogate_results
         }
 
-    def compute_TRS(self) -> np.ndarray:
+    def compute_TRS(self) -> Dict:
         """
-        Compute Total Regulation Score (TRS) matching MATLAB implementation.
+        Compute Total Regulation Score (TRS).
         """
         S_total_list = self._ci._results.get('S_total_list')
         R_total_list = self._ci._results.get('R_total_list')
@@ -1207,15 +1198,15 @@ class CausalFilter:
 
         num_pair, num_type, num_data = S_total_list.shape
         
-        # Initialize TRS matrix with NaN (matching MATLAB)
+        # Initialize TRS matrix with NaN
         TRS_total = np.full((num_pair, num_type), np.nan)
 
         for i in range(num_pair):
             for j in range(num_type):
-                # Reshape arrays to match MATLAB's column vectors
-                S_tmp = S_total_list[i, j, :].reshape(num_data, 1)
-                R_tmp = R_total_list[i, j, :].reshape(num_data, 1)
+                S_tmp = S_total_list[i, j, :]  
+                R_tmp = R_total_list[i, j, :]
                 
+                # Process S and R values
                 S_processed = (np.abs(S_tmp) >= self._thres_S).astype(float)
                 R_processed = (R_tmp >= self._thres_R).astype(float)
                 
@@ -1223,14 +1214,14 @@ class CausalFilter:
                 if R_sum == 0:
                     TRS_total[i, j] = np.nan
                 else:
-                    # Important: Use the raw S values for sign, but processed values for magnitude
-                    TRS_total[i, j] = np.sum(np.sign(S_tmp) * S_processed * R_processed) / R_sum
+                    # Calculate TRS as ratio of significant regions
+                    TRS_total[i, j] = np.sum(S_processed * R_processed) / R_sum
 
         self._TRS_total = TRS_total
         
-        # Create regulation matrix matching MATLAB
+        # Create regulation matrix (1 where TRS >= threshold)
         regulation = np.zeros((num_pair, num_type))
-        regulation[~np.isnan(TRS_total) & (TRS_total >= self._thres_TRS)] = 1
+        regulation[~np.isnan(TRS_total) & (np.abs(TRS_total) >= self._thres_TRS)] = 1
 
         return {
             'TRS_total': TRS_total,
