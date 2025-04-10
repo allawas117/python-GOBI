@@ -1,9 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from numba import jit
 from itertools import combinations
 from tqdm import tqdm
 import scipy.io
+from numba import jit
 from joblib import Parallel, delayed
 import time
 import os
@@ -11,6 +11,7 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from typing import Dict
 
 class CausalInference:
     def __init__(self):
@@ -536,11 +537,31 @@ class CausalInference:
         t_1, t_2 = np.meshgrid(t, t)
         return score_list, t_1, t_2
 
-    def S_threshold(self, S, thres):
-        return np.where(np.abs(S) < thres, 1, 0)
+    def S_threshold(self, S_values: np.ndarray, threshold: float) -> np.ndarray:
+        """
+        Apply threshold to S values (matching MATLAB implementation).
 
-    def R_threshold(self, R, thres):
-        return np.where(R > thres, 1, 0)
+        Args:
+            S_values: Array of S values
+            threshold: Threshold value
+
+        Returns:
+            Processed S values (1 where |S| >= threshold, 0 otherwise)
+        """
+        return (np.abs(S_values) >= threshold).astype(float)
+
+    def R_threshold(self, R_values: np.ndarray, threshold: float) -> np.ndarray:
+        """
+        Apply threshold to R values (matching MATLAB implementation).
+
+        Args:
+            R_values: Array of R values
+            threshold: Threshold value
+
+        Returns:
+            Processed R values (1 where R >= threshold, 0 otherwise)
+        """
+        return (R_values >= threshold).astype(float)
 
     def save_results(self, filename):
         np.save(filename, self._results)
@@ -1178,44 +1199,45 @@ class CausalFilter:
 
     def compute_TRS(self) -> np.ndarray:
         """
-        Compute Target Regulation Score (TRS) for all component pairs and types.
-
-        Returns:
-            TRS_total: Array of TRS values with shape (num_pair, num_type).
+        Compute Total Regulation Score (TRS) matching MATLAB implementation.
         """
-        start_time = time.time()
-
-        # Access data from the CausalInference instance
         S_total_list = self._ci._results.get('S_total_list')
         R_total_list = self._ci._results.get('R_total_list')
         if S_total_list is None or R_total_list is None:
-            raise ValueError("CausalInference results are incomplete. Please run the analysis first.")
+            raise ValueError("CausalInference results are incomplete")
 
         num_pair, num_type, num_data = S_total_list.shape
+        
+        # Initialize TRS matrix with NaN (matching MATLAB)
+        TRS_total = np.full((num_pair, num_type), np.nan)
 
-        # Initialize TRS matrix
-        TRS_total = np.zeros((num_pair, num_type))
-
-        # Compute TRS for each pair and type
         for i in range(num_pair):
             for j in range(num_type):
-                S_tmp = S_total_list[i, j, :]
-                R_tmp = R_total_list[i, j, :]
-
-                # Apply thresholds
-                S_processed = self.S_threshold(S_tmp, self._thres_S)
-                R_processed = self.R_threshold(R_tmp, self._thres_R)
-
-                # Calculate TRS
-                if np.sum(R_processed) == 0:
-                    TRS_total[i, j] = 0
+                # Reshape arrays to match MATLAB's column vectors
+                S_tmp = S_total_list[i, j, :].reshape(num_data, 1)
+                R_tmp = R_total_list[i, j, :].reshape(num_data, 1)
+                
+                # Process S and R values according to MATLAB implementation
+                S_processed = (np.abs(S_tmp) >= self._thres_S).astype(float)
+                R_processed = (R_tmp >= self._thres_R).astype(float)
+                
+                # Calculate TRS exactly as in MATLAB
+                R_sum = np.sum(R_processed)
+                if R_sum == 0:
+                    TRS_total[i, j] = np.nan
                 else:
-                    TRS_total[i, j] = np.sum(S_processed * R_processed) / np.sum(R_processed)
+                    TRS_total[i, j] = np.sum(S_processed * R_processed) / R_sum
 
         self._TRS_total = TRS_total
-        print(f"TRS computation completed in {time.time() - start_time:.2f} seconds")
+        
+        # Create regulation matrix matching MATLAB
+        regulation = np.zeros((num_pair, num_type))
+        regulation[~np.isnan(TRS_total) & (TRS_total >= self._thres_TRS)] = 1
 
-        return TRS_total
+        return {
+            'TRS_total': TRS_total,
+            'regulation': regulation
+        }
 
     def S_threshold(self, S_values: np.ndarray, threshold: float) -> np.ndarray:
         """
