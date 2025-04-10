@@ -14,9 +14,9 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 class CausalInference:
     def __init__(self):
-        self.data = None
-        self.rds_data = None
-        self.params = {
+        self._data = None
+        self._rds_data = None
+        self._params = {
             'thres_R': 0.05,
             'thres_S': 0.9,
             'thres_TRS': 0.9,
@@ -29,9 +29,33 @@ class CausalInference:
             'overlapping_ratio': 0.5,
             'time_interval': 1
         }
-        self.results = {}
-        self.dimension = 1
+        self._results = {}
+        self._dimension = 1
+        self._visualizer = CausalVisualizer(self)
+        self._data_processor = DataProcessor()
+
+    @property
+    def dimension(self):
+        return self._dimension
     
+    @dimension.setter
+    def dimension(self, value):
+        if not isinstance(value, int) or value < 1 or value > 3:
+            raise ValueError("Dimension must be an integer between 1 and 3")
+        self._dimension = value
+
+    @property
+    def params(self):
+        return self._params.copy()  # Return a copy to prevent direct modification
+
+    def set_params(self, **kwargs):
+        """Protected method to update parameters with validation"""
+        for key, value in kwargs.items():
+            if key in self._params:
+                self._params[key] = value
+            else:
+                raise ValueError(f"Unknown parameter: {key}")
+
     def tune_parameters(self, method='interactive'):
         """
         Tune parameters for the model.
@@ -50,13 +74,13 @@ class CausalInference:
         if method == 'interactive':
             print("=== Interactive Parameter Selection ===")
             print("Current parameters:")
-            for param, value in self.params.items():
+            for param, value in self._params.items():
                 print(f"  {param}: {value}")
             
             print("\nEnter new parameter values (leave blank to keep current value):")
             new_params = {}
             
-            for param, value in self.params.items():
+            for param, value in self._params.items():
                 # Customize prompt based on parameter type
                 if param == 'type_self':
                     prompt = f"Enter {param} (current: {value}, use 'nan' for NaN): "
@@ -114,7 +138,7 @@ class CausalInference:
                     if custom_values:
                         try:
                             # Convert to appropriate type
-                            current_value = self.params[param]
+                            current_value = self._params[param]
                             if isinstance(current_value, int):
                                 params_to_tune[param] = [int(val.strip()) for val in custom_values.split(',')]
                             elif isinstance(current_value, float):
@@ -158,7 +182,7 @@ class CausalInference:
             # Ask if user wants to visualize results
             visualize = input("Visualize tuning results? (y/n, default: y): ")
             if visualize.lower() != 'n':
-                self.plot_hyperparameter_tuning_results(all_results)
+                self._visualizer.plot_hyperparameter_tuning_results(all_results)
             
             return best_params
         
@@ -192,18 +216,18 @@ class CausalInference:
         import itertools
         import random
         
-        if 'y_total' not in self.data:
+        if 'y_total' not in self._data:
             print("Please run preprocessing first.")
             return {}, []
         
         all_results = []
         
         # Store original parameters
-        original_params = self.params.copy()
+        original_params = self._params.copy()
         
         # Create data splits for cross-validation
         kf = KFold(n_splits=cv_folds, shuffle=True, random_state=42)
-        data_indices = np.arange(self.data['num_data'])
+        data_indices = np.arange(self._data['num_data'])
         
         # Decide whether to do grid search or random search
         if n_iterations > 0 and n_iterations < np.prod([len(values) for values in parameter_ranges.values()]):
@@ -222,40 +246,41 @@ class CausalInference:
         # Function to evaluate a single parameter combination
         def evaluate_params(params_to_test, train_indices, test_indices):
             # Update parameters
-            self.params.update(params_to_test)
+            self._params.update(params_to_test)
             
             # Create subset of data for training
-            original_y_total = self.data['y_total'].copy()
-            self.data['y_total'] = original_y_total[train_indices]
-            self.data['num_data'] = len(train_indices)
+            original_y_total = self._data['y_total'].copy()
+            self._data['y_total'] = original_y_total[train_indices]
+            self._data['num_data'] = len(train_indices)
             
             # Run analysis on training data
             self.run_analysis()
             
             # Score on test data
-            self.data['y_total'] = original_y_total[test_indices]
-            self.data['num_data'] = len(test_indices)
+            self._data['y_total'] = original_y_total[test_indices]
+            self._data['num_data'] = len(test_indices)
             
             # Calculate test score based on the scoring method
+            # Current metrics for scoring methods need more evidence!!!
             if scoring_method == 'trs_variance':
                 # Lower variance in TRS scores is better
-                TRS_total = self.results['TRS_total']
+                TRS_total = self._results['TRS_total']
                 score = -np.nanvar(TRS_total)  # Negative because we want to maximize score
             elif scoring_method == 'trs_mean':
                 # Higher mean TRS is better (closer to 1)
-                TRS_total = self.results['TRS_total']
+                TRS_total = self._results['TRS_total']
                 score = np.nanmean(TRS_total)
             elif scoring_method == 'connectivity':
                 # More significant connections is better
-                TRS_total = self.results['TRS_total']
-                significant_connections = np.sum(TRS_total > self.params['thres_TRS'])
+                TRS_total = self._results['TRS_total']
+                significant_connections = np.sum(TRS_total > self._params['thres_TRS'])
                 score = significant_connections
             else:
                 raise ValueError(f"Unknown scoring method: {scoring_method}")
             
             # Restore original data
-            self.data['y_total'] = original_y_total
-            self.data['num_data'] = len(original_y_total)
+            self._data['y_total'] = original_y_total
+            self._data['num_data'] = len(original_y_total)
             
             return score
         
@@ -286,7 +311,7 @@ class CausalInference:
         best_params = all_results[0]['params']
         
         # Restore original parameters
-        self.params = original_params
+        self._params = original_params
         
         print(f"Hyperparameter tuning complete. Best parameters: {best_params}")
         print(f"Best score: {all_results[0]['mean_score']:.4f}±{all_results[0]['std_score']:.4f}")
@@ -294,10 +319,762 @@ class CausalInference:
         # Offer to update parameters with best found
         update = input("Update model with best parameters? (y/n): ")
         if update.lower() == 'y':
-            self.params.update(best_params)
+            self._params.update(best_params)
             print("Parameters updated.")
         
         return best_params, all_results
+
+    def load_data(self, file_path):
+        self._data_processor.load_data(file_path)
+        self._data = self._data_processor.data
+        self._dimension = self.detect_dimension(self._data['num_component'])
+        print(f"Automatically detected dimension: {self._dimension}")
+
+    def preprocess(self):
+        self._data_processor.preprocess(self._params)
+        self._data = self._data_processor.data
+
+    def detect_dimension(self, n_components):
+        """
+        Automatically detect the dimension based on number of components.
+        For n components, the dimension is typically n-1 (for meaningful interactions).
+        Maximum supported dimension is 3. 
+        Implementation for higher dimensions may be included in the future.
+        Currently, some higher dimension analysis using GOBI may cause errors.
+        """
+        if n_components <= 1:
+            return 1  # Default to dimension 1 if only one component
+        elif n_components >= 4:
+            return 3  # Cap at dimension 3 for practical reasons
+        else:
+            return n_components - 1
+
+    def run_analysis(self):
+        if 'y_total' not in self._data:
+            print("Please run preprocessing first.")
+            return
+
+        print(f"Starting analysis for dimension {self._dimension}...")
+        start_time = time.time()
+
+        thres_R = self._params['thres_R']
+        thres_S = self._params['thres_S']
+        thres_TRS = self._params['thres_TRS']
+        thres_noise = self._params['thres_noise']
+        type_self = self._params['type_self']
+        time_interval = self._params['time_interval']
+
+        # Generate component list using the generalized function
+        component_list = self.generate_component_list_dimN(
+            self._data['num_component'],
+            self._dimension,
+            self._params['type_self']
+        )
+
+        # Number of regulation types is 2^dimension
+        num_type = 2**self._dimension
+
+        print(f"Number of components: {self._data['num_component']}")
+        print(f"Number of regulation types: {num_type}")
+        print(f"Component list shape: {component_list.shape}")
+
+        # Compute scores using the generalized compute_scores_parallel function
+        S_total_list, R_total_list = self.compute_scores_parallel(component_list, num_type)
+
+        # Process scores
+        S_processed = self.S_threshold(S_total_list, self._params['thres_S'])
+        R_processed = self.R_threshold(R_total_list, self._params['thres_R'])
+
+        R_sum = np.sum(R_processed, axis=2)
+        SR_sum = np.sum(S_processed * R_processed, axis=2)
+
+        TRS_total = np.where(R_sum == 0, np.nan, SR_sum / R_sum)
+
+        self._results = {
+            'TRS_total': TRS_total,
+            'component_list': component_list,
+            'S_total_list': S_total_list,  # Store the raw scores
+            'R_total_list': R_total_list,  # Store the raw scores
+            'dimension': self._dimension
+        }
+
+        print(f"Analysis completed in {time.time() - start_time:.2f} seconds.")
+
+    def generate_component_list_dimN(self, num_component, dimension, type_self):
+        """
+        Generate component list for any dimension N.
+        Format: [cause1, cause2, ..., causeN, target]
+        """
+        component_list = []
+
+        # Function to generate combinations of causes
+        def generate_cause_combinations(components, dimension):
+            return list(combinations(components, dimension))
+
+        # Generate all cause combinations
+        component_indices = list(range(1, num_component + 1))
+        cause_combinations = generate_cause_combinations(component_indices, dimension)
+
+        # For each combination, iterate through possible targets
+        for causes in cause_combinations:
+            for target in range(1, num_component + 1):
+                # Only include if target is not in the causes OR type_self is not NaN
+                if target not in causes or not np.isnan(type_self):
+                    component_list.append(list(causes) + [target])
+
+        return np.array(component_list)
+
+    def compute_scores_parallel(self, component_list, num_type):
+        """Compute scores for any dimension analysis in parallel."""
+        y_total = self._data['y_total']
+        t = self._data['t'].flatten()
+        num_data = len(y_total)
+        num_pair = len(component_list)
+
+        S_total_list = np.zeros((num_pair, num_type, num_data))
+        R_total_list = np.zeros((num_pair, num_type, num_data))
+
+        def process_data(i):
+            y_target = y_total[i]
+            t_target = t.flatten()
+
+            S_total = np.zeros((num_pair, num_type))
+            R_total = np.zeros((num_pair, num_type))
+
+            for j, combo in enumerate(component_list):
+                # Extract causes and target
+                # Last element is the target, all others are causes
+                cause_indices = combo[:-1]
+                target_index = combo[-1]
+
+                # Get cause and target variables
+                X_list = [y_target[:, idx-1] for idx in cause_indices]
+                Y = y_target[:, target_index-1]
+
+                # Use the generalized RDS function
+                score_list, t_1, t_2 = self.RDS_dimN(X_list, Y, t_target, self._params['time_interval'])
+
+                # Calculate S and R values as before
+                for k in range(num_type):
+                    score = score_list[:, :, k]
+                    loca_plus = np.where(score > self._params['thres_noise'])
+                    loca_minus = np.where(score < -self._params['thres_noise'])
+
+                    if len(loca_plus[0]) == 0 and len(loca_minus[0]) == 0:
+                        s = 1
+                    else:
+                        s = (np.sum(score[loca_plus]) + np.sum(score[loca_minus])) / (np.abs(np.sum(score[loca_plus])) + np.abs(np.sum(score[loca_minus])))
+
+                    r = (len(loca_plus[0]) + len(loca_minus[0])) / (len(t_1) * len(t_2) / 2)
+                    S_total[j, k] = s
+                    R_total[j, k] = r
+
+            return S_total, R_total
+
+        results = Parallel(n_jobs=-1)(delayed(process_data)(i) for i in range(num_data))
+
+        for i, (S_total, R_total) in enumerate(results):
+            S_total_list[:, :, i] = S_total
+            R_total_list[:, :, i] = R_total
+
+        return S_total_list, R_total_list
+
+    def RDS_dimN(self, X_list, Y, t, time_interval):
+        """
+        Generalized Regulation Detection Scoring function for any dimension N.
+        Based on the MATLAB implementation. 
+        Potential for numerical differences due to MATLAB's matrix operations and toolbox dependencies.
+        """
+        # Calculate the gradient of target variable
+        f = np.gradient(Y, time_interval, edge_order=1)
+
+        # Create meshgrids and differences for each cause
+        X_diffs = []
+        for X in X_list:
+            X_mesh, X_mesh_transpose = np.meshgrid(X, X)
+            X_diffs.append(X_mesh_transpose - X_mesh)
+
+        # Create meshgrid for the target gradient
+        f_mesh, f_mesh_transpose = np.meshgrid(f, f)
+        f_diff = f_mesh_transpose - f_mesh
+
+        # Number of regulation types: 2^dimension
+        num_types = 2**self._dimension
+
+        # Initialize scores array with zeros
+        score_list = np.zeros((len(t), len(t), num_types))
+        
+        # Calculate base score (X_diffs product * f_diff)
+        base_score = f_diff
+        for X_diff in X_diffs:
+            base_score = base_score * X_diff
+        
+        # For each regulation type
+        for i in range(num_types):
+            # Convert type index to binary pattern
+            pattern = [(i >> j) & 1 for j in range(len(X_list))]
+            
+            # Create conditions array for this regulation type
+            conditions = []
+            sign = 1  # Track the final sign for this regulation type
+            
+            for idx, (bit, X_diff) in enumerate(zip(pattern, X_diffs)):
+                if bit == 0:  # Positive regulation
+                    conditions.append(X_diff >= 0)
+                else:  # Negative regulation
+                    conditions.append(X_diff < 0)
+                    sign *= -1  # Flip sign for each negative regulation (follows GOBI MATLAB logic)
+            
+            # Combine all conditions
+            combined_condition = conditions[0]
+            for cond in conditions[1:]:
+                combined_condition = combined_condition & cond
+                
+            # Apply score with proper sign (matching MATLAB implementation)
+            score_list[:, :, i] = np.where(combined_condition, sign * base_score, 0)
+
+        t_1, t_2 = np.meshgrid(t, t)
+        return score_list, t_1, t_2
+
+    def S_threshold(self, S, thres):
+        return np.where(np.abs(S) < thres, 1, 0)
+
+    def R_threshold(self, R, thres):
+        return np.where(R > thres, 1, 0)
+
+    def save_results(self, filename):
+        np.save(filename, self._results)
+        print(f"Results saved to {filename}")
+
+    def load_results(self, filename):
+        self._results = np.load(filename, allow_pickle=True).item()
+        print(f"Results loaded from {filename}")
+
+class DataProcessor:
+    """Handles all data loading and preprocessing operations"""
+    def __init__(self):
+        self._data = None
+
+    @property
+    def data(self):
+        return self._data
+
+    def load_data(self, file_path):
+        print("Loading data...")
+        file_extension = file_path.split('.')[-1].lower()
+
+        if file_extension == 'mat':
+            # Load .mat file
+            mat_data = scipy.io.loadmat(file_path)
+
+            # Find t and y arrays in the .mat file
+            t_key = next((key for key in mat_data.keys() if key.lower() == 't'), None)
+            y_key = next((key for key in mat_data.keys() if key.lower() == 'y'), None)
+
+            if t_key is None or y_key is None:
+                raise ValueError("Could not find 't' and 'y' arrays in the .mat file")
+
+            t = mat_data[t_key].flatten()
+            y = mat_data[y_key]
+
+            print(f"Loaded data: t from '{t_key}', y from '{y_key}'")
+        elif file_extension == 'csv':
+            # Load .csv file
+            data = pd.read_csv(file_path)
+            t = data.iloc[:, 0].values
+            y = data.iloc[:, 1:].values
+        elif file_extension in ['xlsx', 'xls']:
+            # Load .xlsx or .xls file
+            data = pd.read_excel(file_path)
+            t = data.iloc[:, 0].values
+            y = data.iloc[:, 1:].values
+        else:
+            raise ValueError(f"Unsupported file format: {file_extension}")
+
+        # Ensure t is a 1D array and y is a 2D array
+        t = np.array(t).flatten()
+        y = np.array(y)
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+
+        # Store data
+        self._data = {
+            'y': y,
+            't': t,
+            'num_component': y.shape[1],
+            'num_columns': y.shape[1]
+        }
+
+        print(f"Data loaded successfully. Shape of y: {y.shape}, Shape of t: {t.shape}")
+
+    def preprocess(self, params):
+        print("Starting preprocessing...")
+        start_time = time.time()
+
+        y = self._data['y']
+        t = self._data['t']
+        num_columns = self._data['num_columns']
+
+        # Moving average
+        win_avg = params['win_avg']
+        y_movavg = np.apply_along_axis(lambda m: np.convolve(m, np.ones(win_avg), 'same') / win_avg, axis=0, arr=y)
+
+        # Interpolation parameters
+        method = params['method']
+        num_fourier = params['num_fourier']
+        window_size_ori = params['window_size_ori']
+        overlapping_ratio = params['overlapping_ratio']
+        time_interval = params['time_interval']
+
+        window_size = int(window_size_ori / time_interval)
+        window_move = int(np.ceil(window_size_ori * (1 - overlapping_ratio)) / time_interval)
+
+        # Interpolate data
+        t_original = np.arange(len(t))
+        t_fit = np.linspace(t_original[0], t_original[-1], int(len(t_original) / time_interval))
+        y_fit = np.zeros((len(t_fit), num_columns))
+
+        for i in range(num_columns):
+            if method == 1:
+                interp_func = interp1d(t_original, y_movavg[:, i], kind='linear')
+            elif method == 2:
+                interp_func = interp1d(t_original, y_movavg[:, i], kind='cubic')
+            elif method == 3:
+                interp_func = interp1d(t_original, y_movavg[:, i], kind='linear')
+                y_tmp = interp_func(t_fit)
+
+                def fourier_func(x, *params):
+                    y = np.zeros_like(x)
+                    for i in range(0, len(params) - 1, 2):
+                        y += params[i] * np.cos(params[i+1] * x) + params[i+2] * np.sin(params[i+1] * x)
+                    return y + params[-1]
+
+                initial_params = [1] * (2 * num_fourier + 1)
+                params, _ = curve_fit(fourier_func, t_fit, y_tmp, p0=initial_params)
+                y_fit[:, i] = fourier_func(t_fit, *params)
+                continue
+
+            y_fit[:, i] = interp_func(t_fit)
+
+        # Cut and normalize data
+        y_total = []
+        for start in range(0, len(y_fit) - window_size + 1, window_move):
+            y_tmp = y_fit[start:start + window_size, :]
+            y_tmp = (y_tmp - np.min(y_tmp, axis=0)) / (np.max(y_tmp, axis=0) - np.min(y_tmp, axis=0))
+            y_total.append(y_tmp)
+
+        self._data['y_total'] = np.array(y_total)
+        self._data['t'] = t_fit[:window_size] / t_fit[window_size - 1]
+        self._data['time_interval'] = time_interval
+        self._data['num_data'] = len(y_total)
+
+        print(f"Preprocessing completed in {time.time() - start_time:.2f} seconds.")
+
+class CausalVisualizer:
+    """Handles all visualization operations"""
+    def __init__(self, causal_inference):
+        self._ci = causal_inference
+        
+    def plot_trs_heatmap(self):
+        if 'TRS_total' not in self._ci._results:
+            print("Please run the analysis first.")
+            return
+
+        TRS_total = self._ci._results['TRS_total']
+        component_list = self._ci._results['component_list']
+
+        plt.figure(figsize=(10, 8))
+        plt.imshow(TRS_total, aspect='auto', cmap='Blues_r', vmin=0, vmax=1)
+        plt.colorbar()
+
+        for i in range(TRS_total.shape[0] + 1):
+            plt.axhline(y=i - 0.5, color='black', linewidth=1)
+        for i in range(TRS_total.shape[1] + 1):
+            plt.axvline(x=i - 0.5, color='black', linewidth=1)
+
+        plt.title(f'Heatmap of TRS (Dimension {self._ci._dimension} Analysis)')
+        plt.xlabel('Regulation Type')
+        plt.ylabel('Component Combinations')
+
+        # Create labels based on dimension
+        if self._ci._dimension == 1:
+            y_labels = [f"{combo[0]} -> {combo[1]}" for combo in component_list]
+            x_labels = ['Positive', 'Negative']
+        elif self._ci._dimension == 2:
+            y_labels = [f"({combo[0]},{combo[1]}) -> {combo[2]}" for combo in component_list]
+            x_labels = ['++', '+-', '-+', '--']  # Four regulation types for dimension 2
+
+        plt.yticks(range(len(y_labels)), y_labels)
+        plt.xticks(range(len(x_labels)), x_labels)
+
+        plt.tight_layout()
+        plt.show()
+        
+    def plot_time_series(self):
+        if 'y_total' not in self._ci._data:
+            print("Please run preprocessing first.")
+            return
+
+        y_total = self._ci._data['y_total']  # Windowed data
+        t = self._ci._data['t']  # Time points within a window
+        num_windows = len(y_total)
+
+        # Concatenate windowed data for plotting
+        y_fit = np.concatenate(y_total, axis=0)
+        t_fit = np.tile(t, num_windows)  # Repeat time points for each window
+        t_fit = t_fit + np.repeat(np.arange(num_windows) * (len(t) - int(len(t) * self._ci._params['overlapping_ratio'])), len(t))
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(t_fit, y_fit, 'b-', linewidth=1, label='Windowed Data')  # Plot windowed data
+        plt.title('Time Series: Windowed Data')  # Update title
+        plt.xlabel('Time')
+        plt.ylabel('Value')  # Use 'Value' for windowed data
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+    
+    def plot_rds_scores_time_windows(self, component_indices=None, regulation_types=None, max_windows=None):
+        """
+        Plot RDS across time windows for selected components and regulation types.
+
+        Parameters:
+        -----------
+        component_indices : list or None
+            Indices of components to plot. If None, plot all components.
+        regulation_types : list or None
+            Indices of regulation types to plot. If None, plot all types.
+        max_windows : int or None
+            Maximum number of time windows to plot. If None, plot all windows.
+        """
+        if 'TRS_total' not in self._ci._results:
+            print("Please run the analysis first.")
+            return
+
+        S_total_list = self._ci._results.get('S_total_list', None)
+        R_total_list = self._ci._results.get('R_total_list', None)
+
+        if S_total_list is None or R_total_list is None:
+            print("S_total_list or R_total_list not found in results. Ensure you're storing these in the results dictionary.")
+            return
+
+        component_list = self._ci._results['component_list']
+        num_windows = S_total_list.shape[2]
+
+        # If no specific components selected, plot all
+        if component_indices is None:
+            component_indices = range(len(component_list))
+
+        # If no specific regulation types selected, plot all
+        if regulation_types is None:
+            regulation_types = range(2**self._ci._dimension)
+
+        # Limit the number of windows if specified
+        if max_windows is not None and max_windows < num_windows:
+            windows_to_plot = np.linspace(0, num_windows-1, max_windows, dtype=int)
+        else:
+            windows_to_plot = range(num_windows)
+
+        # Create labels for regulation types
+        if self._ci._dimension == 1:
+            reg_type_labels = ['Positive', 'Negative']
+        elif self._ci._dimension == 2:
+            reg_type_labels = ['++', '+-', '-+', '--']
+        elif self._ci._dimension == 3:
+            reg_type_labels = ['+++', '++-', '+-+', '+--', '-++', '-+-', '--+', '---']
+        else:
+            reg_type_labels = [f'Type {i}' for i in range(2**self._ci._dimension)]
+
+        # Create subplot grid
+        n_components = len(component_indices)
+        n_reg_types = len(regulation_types)
+
+        fig, axes = plt.subplots(n_components, n_reg_types, figsize=(4*n_reg_types, 3*n_components),
+                                sharex=True, sharey=True)
+
+        # Adjust axes for single component or regulation type
+        if n_components == 1 and n_reg_types == 1:
+            axes = np.array([[axes]])
+        elif n_components == 1:
+            axes = axes.reshape(1, -1)
+        elif n_reg_types == 1:
+            axes = axes.reshape(-1, 1)
+
+        # Plot each component and regulation type
+        for i, comp_idx in enumerate(component_indices):
+            combo = component_list[comp_idx]
+            if self._ci._dimension == 1:
+                combo_label = f"{combo[0]} -> {combo[1]}"
+            else:
+                cause_str = ','.join(str(c) for c in combo[:-1])
+                combo_label = f"({cause_str}) -> {combo[-1]}"
+
+            for j, reg_type in enumerate(regulation_types):
+                ax = axes[i, j]
+
+                # Extract S and R values for this component and regulation type across windows
+                S_values = S_total_list[comp_idx, reg_type, windows_to_plot]
+                R_values = R_total_list[comp_idx, reg_type, windows_to_plot]
+
+                # Plot S values
+                ax.plot(windows_to_plot, S_values, 'b-', label='S Score')
+                ax.set_ylim(-1.1, 1.1)
+                ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+
+                # Plot R values on a second y-axis
+                ax2 = ax.twinx()
+                ax2.plot(windows_to_plot, R_values, 'r-', label='R Score')
+                ax2.set_ylim(0, 1.1)
+
+                # Set titles and labels
+                if i == 0:
+                    ax.set_title(f'Type: {reg_type_labels[reg_type]}')
+                if j == 0:
+                    ax.set_ylabel(f'S Score\n{combo_label}')
+                if j == n_reg_types - 1:
+                    ax2.set_ylabel('R Score')
+                if i == n_components - 1:
+                    ax.set_xlabel('Time Window')
+
+        # Add a legend
+        lines1, labels1 = axes[0, 0].get_legend_handles_labels()
+        lines2, labels2 = axes[0, 0].get_figure().axes[1].get_legend_handles_labels()
+        fig.legend(lines1 + lines2, labels1 + labels2, loc='upper center', bbox_to_anchor=(0.5, 0.05), ncol=2)
+
+        plt.tight_layout(rect=[0, 0.1, 1, 0.95])
+        plt.suptitle(f'RDS Scores Across Time Windows (Dimension {self._ci._dimension})', fontsize=16)
+        plt.subplots_adjust(hspace=0.3, wspace=0.4)
+        plt.show()
+
+    def plot_rds_component_comparison(self, component_indices=None, max_windows=None):
+        """
+        Plot S-scores for different regulation types together for each component.
+
+        Parameters:
+        -----------
+        component_indices : list or None
+            Indices of components to plot. If None, plot all components.
+        max_windows : int or None
+            Maximum number of time windows to plot. If None, plot all windows.
+        """
+        if 'S_total_list' not in self._ci._results:
+            print("Please run the analysis first.")
+            return
+
+        S_total_list = self._ci._results['S_total_list']
+        component_list = self._ci._results['component_list']
+        num_windows = S_total_list.shape[2]
+        num_types = 2**self._ci._dimension
+
+        # If no specific components selected, plot all
+        if component_indices is None:
+            component_indices = range(len(component_list))
+
+        # Limit the number of windows if specified
+        if max_windows is not None and max_windows < num_windows:
+            windows_to_plot = np.linspace(0, num_windows-1, max_windows, dtype=int)
+        else:
+            windows_to_plot = range(num_windows)
+
+        # Create labels for regulation types
+        if self._ci._dimension == 1:
+            reg_type_labels = ['Positive', 'Negative']
+            colors = ['blue', 'red']
+        elif self._ci._dimension == 2:
+            reg_type_labels = ['++', '+-', '-+', '--']
+            colors = ['blue', 'green', 'orange', 'red']
+        else:
+            reg_type_labels = [f'Type {i}' for i in range(num_types)]
+            colors = plt.cm.tab10(np.linspace(0, 1, num_types))
+
+        # Create subplots, one for each component
+        n_components = len(component_indices)
+        fig, axes = plt.subplots(n_components, 1, figsize=(10, 4*n_components), sharex=True)
+
+        # Handle single component case
+        if n_components == 1:
+            axes = [axes]
+
+        # Plot each component
+        for i, comp_idx in enumerate(component_indices):
+            ax = axes[i]
+            combo = component_list[comp_idx]
+
+            # Create component label
+            if self._ci._dimension == 1:
+                combo_label = f"{combo[0]} -> {combo[1]}"
+            else:
+                cause_str = ','.join(str(c) for c in combo[:-1])
+                combo_label = f"({cause_str}) -> {combo[-1]}"
+
+            # Plot each regulation type
+            for reg_type in range(num_types):
+                # Extract S values for this component and regulation type
+                S_values = S_total_list[comp_idx, reg_type, windows_to_plot]
+
+                # Plot S values
+                ax.plot(windows_to_plot, S_values, color=colors[reg_type],
+                        label=reg_type_labels[reg_type], linewidth=2)
+
+            # Add zero line
+            ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+
+            # Set labels and title
+            ax.set_ylabel('S-Score')
+            ax.set_title(f'Component: {combo_label}')
+            ax.set_ylim(-1.1, 1.1)
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+
+        # Set x-axis label for bottom subplot
+        axes[-1].set_xlabel('Time Window')
+
+        plt.tight_layout()
+        plt.suptitle(f'RDS S-Scores by Regulation Type (Dimension {self._ci._dimension})', fontsize=16, y=1.02)
+        plt.show()
+
+    def plot_time_window_segmentation(self, component_indices=None, max_windows=5):
+        """
+        Visualize the time window segmentation of the data.
+
+        Parameters:
+        -----------
+        component_indices : list or None
+            Indices of components to plot. If None, plot first component.
+        max_windows : int
+            Maximum number of time windows to plot.
+        """
+        if 'y_total' not in self._ci._data:
+            print("Please run preprocessing first.")
+            return
+
+        y_total = self._ci._data['y_total']
+        num_windows = len(y_total)
+
+        # If no specific components selected, plot the first component
+        if component_indices is None:
+            component_indices = [0]
+
+        # Select a subset of windows to plot
+        if max_windows > num_windows:
+            max_windows = num_windows
+
+        window_indices = np.linspace(0, num_windows-1, max_windows, dtype=int)
+
+        # Create a grid of subplots
+        fig, axes = plt.subplots(len(component_indices), max_windows,
+                                figsize=(4*max_windows, 3*len(component_indices)),
+                                sharex=True, sharey=True)
+
+        # Adjust axes for single component or window
+        if len(component_indices) == 1 and max_windows == 1:
+            axes = np.array([[axes]])
+        elif len(component_indices) == 1:
+            axes = axes.reshape(1, -1)
+        elif max_windows == 1:
+            axes = axes.reshape(-1, 1)
+
+        # Plot each component and window
+        for i, comp_idx in enumerate(component_indices):
+            for j, win_idx in enumerate(window_indices):
+                ax = axes[i, j]
+
+                # Extract data for this component and window
+                window_data = y_total[win_idx][:, comp_idx]
+
+                # Plot the data
+                ax.plot(window_data)
+
+                # Set titles and labels
+                if i == 0:
+                    ax.set_title(f'Window {win_idx+1}')
+                if j == 0:
+                    ax.set_ylabel(f'Component {comp_idx+1}')
+                if i == len(component_indices) - 1:
+                    ax.set_xlabel('Time')
+
+        plt.tight_layout()
+        plt.suptitle('Time Window Segmentation Visualization', fontsize=16)
+        plt.show()
+
+    def plot_s_score_heatmap(self, component_indices=None):
+        """
+        Plot S-scores as a heatmap for each component across time windows.
+
+        Parameters:
+        -----------
+        component_indices : list or None
+            Indices of components to plot. If None, plot all components.
+        """
+        if 'S_total_list' not in self._ci._results:
+            print("Please run the analysis first.")
+            return
+
+        S_total_list = self._ci._results['S_total_list']
+        component_list = self._ci._results['component_list']
+
+        # If no specific components selected, plot all
+        if component_indices is None:
+            component_indices = range(len(component_list))
+
+        num_windows = S_total_list.shape[2]
+        num_types = 2**self._ci._dimension
+
+        # Create labels for regulation types
+        if self._ci._dimension == 1:
+            reg_type_labels = ['Positive', 'Negative']
+        elif self._ci._dimension == 2:
+            reg_type_labels = ['++', '+-', '-+', '--']
+        else:
+            reg_type_labels = [f'Type {i}' for i in range(num_types)]
+
+        # Create subplots, one for each component
+        n_components = len(component_indices)
+        fig, axes = plt.subplots(n_components, 1, figsize=(12, 3*n_components))
+
+        # Handle single component case
+        if n_components == 1:
+            axes = [axes]
+
+        # Plot each component
+        for i, comp_idx in enumerate(component_indices):
+            ax = axes[i]
+            combo = component_list[comp_idx]
+
+            # Create component label
+            if self._ci._dimension == 1:
+                combo_label = f"{combo[0]} -> {combo[1]}"
+            else:
+                cause_str = ','.join(str(c) for c in combo[:-1])
+                combo_label = f"({cause_str}) -> {combo[-1]}"
+
+            # Extract S values for all regulation types
+            data = S_total_list[comp_idx, :, :]
+
+            # Plot as heatmap
+            im = ax.imshow(data, aspect='auto', cmap='RdBu_r', vmin=-1, vmax=1,
+                          interpolation='none', extent=[0, num_windows, num_types, 0])
+
+            # Add colorbar
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="2%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+
+            # Set y-ticks to regulation types
+            ax.set_yticks(np.arange(0.5, num_types))
+            ax.set_yticklabels(reg_type_labels)
+
+            # Set title
+            ax.set_title(f'Component: {combo_label}')
+
+            # Set labels
+            ax.set_ylabel('Regulation Type')
+            if i == n_components - 1:
+                ax.set_xlabel('Time Window')
+
+        plt.tight_layout()
+        plt.suptitle(f'S-Score Heatmap Across Time Windows (Dimension {self._ci._dimension})', fontsize=16, y=1.02)
+        plt.show()
 
     def plot_hyperparameter_tuning_results(self, tuning_results):
         """
@@ -360,780 +1137,6 @@ class CausalInference:
         plt.tight_layout()
         plt.show()
 
-    def load_data(self, file_path):
-        print("Loading data...")
-        file_extension = file_path.split('.')[-1].lower()
-
-        if file_extension == 'mat':
-            # Load .mat file
-            mat_data = scipy.io.loadmat(file_path)
-
-            # Find t and y arrays in the .mat file
-            t_key = next((key for key in mat_data.keys() if key.lower() == 't'), None)
-            y_key = next((key for key in mat_data.keys() if key.lower() == 'y'), None)
-
-            if t_key is None or y_key is None:
-                raise ValueError("Could not find 't' and 'y' arrays in the .mat file")
-
-            t = mat_data[t_key].flatten()
-            y = mat_data[y_key]
-
-            print(f"Loaded data: t from '{t_key}', y from '{y_key}'")
-        elif file_extension == 'csv':
-            # Load .csv file
-            data = pd.read_csv(file_path)
-            t = data.iloc[:, 0].values
-            y = data.iloc[:, 1:].values
-        elif file_extension in ['xlsx', 'xls']:
-            # Load .xlsx or .xls file
-            data = pd.read_excel(file_path)
-            t = data.iloc[:, 0].values
-            y = data.iloc[:, 1:].values
-        else:
-            raise ValueError(f"Unsupported file format: {file_extension}")
-
-        # Ensure t is a 1D array and y is a 2D array
-        t = np.array(t).flatten()
-        y = np.array(y)
-        if y.ndim == 1:
-            y = y.reshape(-1, 1)
-
-        # Store data
-        self.data = {
-            'y': y,
-            't': t,
-            'num_component': y.shape[1],
-            'num_columns': y.shape[1]
-        }
-
-        print(f"Data loaded successfully. Shape of y: {y.shape}, Shape of t: {t.shape}")
-        # After loading data, automatically detect dimension
-        self.dimension = self.detect_dimension(self.data['num_component'])
-        print(f"Automatically detected dimension: {self.dimension}")
-
-    def preprocess(self):
-        print("Starting preprocessing...")
-        start_time = time.time()
-
-        y = self.data['y']
-        t = self.data['t']
-        num_columns = self.data['num_columns']
-
-        # Moving average
-        win_avg = self.params['win_avg']
-        y_movavg = np.apply_along_axis(lambda m: np.convolve(m, np.ones(win_avg), 'same') / win_avg, axis=0, arr=y)
-
-        # Interpolation parameters
-        method = self.params['method']
-        num_fourier = self.params['num_fourier']
-        window_size_ori = self.params['window_size_ori']
-        overlapping_ratio = self.params['overlapping_ratio']
-        time_interval = self.params['time_interval']
-
-        window_size = int(window_size_ori / time_interval)
-        window_move = int(np.ceil(window_size_ori * (1 - overlapping_ratio)) / time_interval)
-
-        # Interpolate data
-        t_original = np.arange(len(t))
-        t_fit = np.linspace(t_original[0], t_original[-1], int(len(t_original) / time_interval))
-        y_fit = np.zeros((len(t_fit), num_columns))
-
-        for i in range(num_columns):
-            if method == 1:
-                interp_func = interp1d(t_original, y_movavg[:, i], kind='linear')
-            elif method == 2:
-                interp_func = interp1d(t_original, y_movavg[:, i], kind='cubic')
-            elif method == 3:
-                interp_func = interp1d(t_original, y_movavg[:, i], kind='linear')
-                y_tmp = interp_func(t_fit)
-
-                def fourier_func(x, *params):
-                    y = np.zeros_like(x)
-                    for i in range(0, len(params) - 1, 2):
-                        y += params[i] * np.cos(params[i+1] * x) + params[i+2] * np.sin(params[i+1] * x)
-                    return y + params[-1]
-
-                initial_params = [1] * (2 * num_fourier + 1)
-                params, _ = curve_fit(fourier_func, t_fit, y_tmp, p0=initial_params)
-                y_fit[:, i] = fourier_func(t_fit, *params)
-                continue
-
-            y_fit[:, i] = interp_func(t_fit)
-
-        # Cut and normalize data
-        y_total = []
-        for start in range(0, len(y_fit) - window_size + 1, window_move):
-            y_tmp = y_fit[start:start + window_size, :]
-            y_tmp = (y_tmp - np.min(y_tmp, axis=0)) / (np.max(y_tmp, axis=0) - np.min(y_tmp, axis=0))
-            y_total.append(y_tmp)
-
-        self.data['y_total'] = np.array(y_total)
-        self.data['t'] = t_fit[:window_size] / t_fit[window_size - 1]
-        self.data['time_interval'] = time_interval
-        self.data['num_data'] = len(y_total)
-
-        print(f"Preprocessing completed in {time.time() - start_time:.2f} seconds.")
-
-    def detect_dimension(self, n_components):
-        """
-        Automatically detect the dimension based on number of components.
-        For n components, the dimension is typically n-1 (for meaningful interactions).
-        Maximum supported dimension is 3.
-        """
-        if n_components <= 1:
-            return 1  # Default to dimension 1 if only one component
-        elif n_components >= 4:
-            return 3  # Cap at dimension 3 for practical reasons
-        else:
-            return n_components - 1
-
-    def set_params(self, **kwargs):
-        self.params.update(kwargs)
-        print("Parameters updated.")
-
-
-    def run_analysis(self):
-        if 'y_total' not in self.data:
-            print("Please run preprocessing first.")
-            return
-
-        print(f"Starting analysis for dimension {self.dimension}...")
-        start_time = time.time()
-
-        thres_R = self.params['thres_R']
-        thres_S = self.params['thres_S']
-        thres_TRS = self.params['thres_TRS']
-        thres_noise = self.params['thres_noise']
-        type_self = self.params['type_self']
-        time_interval = self.params['time_interval']
-
-        # Generate component list using the generalized function
-        component_list = self.generate_component_list_dimN(
-            self.data['num_component'],
-            self.dimension,
-            self.params['type_self']
-        )
-
-        # Number of regulation types is 2^dimension
-        num_type = 2**self.dimension
-
-        print(f"Number of components: {self.data['num_component']}")
-        print(f"Number of regulation types: {num_type}")
-        print(f"Component list shape: {component_list.shape}")
-
-        # Compute scores using the generalized compute_scores_parallel function
-        S_total_list, R_total_list = self.compute_scores_parallel(component_list, num_type)
-
-        # Process scores
-        S_processed = self.S_threshold(S_total_list, self.params['thres_S'])
-        R_processed = self.R_threshold(R_total_list, self.params['thres_R'])
-
-        R_sum = np.sum(R_processed, axis=2)
-        SR_sum = np.sum(S_processed * R_processed, axis=2)
-
-        TRS_total = np.where(R_sum == 0, np.nan, SR_sum / R_sum)
-
-        self.results = {
-            'TRS_total': TRS_total,
-            'component_list': component_list,
-            'S_total_list': S_total_list,  # Store the raw scores
-            'R_total_list': R_total_list,  # Store the raw scores
-            'dimension': self.dimension
-        }
-
-        print(f"Analysis completed in {time.time() - start_time:.2f} seconds.")
-
-    def generate_component_list_dimN(self, num_component, dimension, type_self):
-        """
-        Generate component list for any dimension N.
-        Format: [cause1, cause2, ..., causeN, target]
-        """
-        component_list = []
-
-        # Function to generate combinations of causes
-        def generate_cause_combinations(components, dimension):
-            return list(combinations(components, dimension))
-
-        # Generate all cause combinations
-        component_indices = list(range(1, num_component + 1))
-        cause_combinations = generate_cause_combinations(component_indices, dimension)
-
-        # For each combination, iterate through possible targets
-        for causes in cause_combinations:
-            for target in range(1, num_component + 1):
-                # Only include if target is not in the causes OR type_self is not NaN
-                if target not in causes or not np.isnan(type_self):
-                    component_list.append(list(causes) + [target])
-
-        return np.array(component_list)
-
-    def compute_scores_parallel(self, component_list, num_type):
-        """Compute scores for any dimension analysis in parallel."""
-        y_total = self.data['y_total']
-        t = self.data['t'].flatten()
-        num_data = len(y_total)
-        num_pair = len(component_list)
-
-        S_total_list = np.zeros((num_pair, num_type, num_data))
-        R_total_list = np.zeros((num_pair, num_type, num_data))
-
-        def process_data(i):
-            y_target = y_total[i]
-            t_target = t.flatten()
-
-            S_total = np.zeros((num_pair, num_type))
-            R_total = np.zeros((num_pair, num_type))
-
-            for j, combo in enumerate(component_list):
-                # Extract causes and target
-                # Last element is the target, all others are causes
-                cause_indices = combo[:-1]
-                target_index = combo[-1]
-
-                # Get cause and target variables
-                X_list = [y_target[:, idx-1] for idx in cause_indices]
-                Y = y_target[:, target_index-1]
-
-                # Use the generalized RDS function
-                score_list, t_1, t_2 = self.RDS_dimN(X_list, Y, t_target, self.params['time_interval'])
-
-                # Calculate S and R values as before
-                for k in range(num_type):
-                    score = score_list[:, :, k]
-                    loca_plus = np.where(score > self.params['thres_noise'])
-                    loca_minus = np.where(score < -self.params['thres_noise'])
-
-                    if len(loca_plus[0]) == 0 and len(loca_minus[0]) == 0:
-                        s = 1
-                    else:
-                        s = (np.sum(score[loca_plus]) + np.sum(score[loca_minus])) / (np.abs(np.sum(score[loca_plus])) + np.abs(np.sum(score[loca_minus])))
-
-                    r = (len(loca_plus[0]) + len(loca_minus[0])) / (len(t_1) * len(t_2) / 2)
-                    S_total[j, k] = s
-                    R_total[j, k] = r
-
-            return S_total, R_total
-
-        results = Parallel(n_jobs=-1)(delayed(process_data)(i) for i in range(num_data))
-
-        for i, (S_total, R_total) in enumerate(results):
-            S_total_list[:, :, i] = S_total
-            R_total_list[:, :, i] = R_total
-
-        return S_total_list, R_total_list
-
-    def RDS_dimN(self, X_list, Y, t, time_interval):
-        """
-        Generalized Regulation Detection Scoring function for any dimension N.
-
-        Parameters:
-        X_list: List of cause variables [X1, X2, ..., XN]
-        Y: Target variable
-        t: Time points
-        time_interval: Time interval between points
-
-        Returns:
-        score_list, t_1, t_2
-        """
-        # Calculate the gradient of target variable
-        f = np.gradient(Y, time_interval, edge_order=1)
-
-        # Number of causes (dimension)
-        dimension = len(X_list)
-
-        # Create meshgrids and differences for each cause
-        X_diffs = []
-        for X in X_list:
-            X_mesh, X_mesh_transpose = np.meshgrid(X, X)
-            X_diffs.append(X_mesh_transpose - X_mesh)
-
-        # Create meshgrid for the target gradient
-        f_mesh, f_mesh_transpose = np.meshgrid(f, f)
-        f_diff = f_mesh_transpose - f_mesh
-
-        # Number of regulation types: 2^dimension
-        num_types = 2**dimension
-
-        # Generate all possible binary patterns for the dimension
-        # For example, dim=2: [00, 01, 10, 11]
-        patterns = []
-        for i in range(num_types):
-            pattern = [(i >> j) & 1 for j in range(dimension)]
-            patterns.append(pattern)
-
-        # Calculate scores for all regulation types
-        scores = []
-        for pattern in patterns:
-            # Create condition array for the pattern
-            conditions = []
-            for idx, bit in enumerate(pattern):
-                if bit == 0:  # Positive regulation (X_diff >= 0)
-                    conditions.append(X_diffs[idx] >= 0)
-                else:  # Negative regulation (X_diff < 0)
-                    conditions.append(X_diffs[idx] < 0)
-
-            # Combine conditions with logical AND
-            combined_condition = conditions[0]
-            for cond in conditions[1:]:
-                combined_condition = combined_condition & cond
-
-            # Calculate product of all X_diffs
-            X_product = X_diffs[0]
-            for diff in X_diffs[1:]:
-                X_product = X_product * diff
-
-            # Count negative regulations in the pattern
-            neg_count = sum(pattern)
-
-            # Apply sign change if needed
-            # If odd number of negative regulations, multiply by -1
-            sign_factor = -1 if neg_count % 2 == 1 else 1
-
-            # Calculate score
-            score = np.where(combined_condition, X_product * f_diff * sign_factor, 0)
-            scores.append(score)
-
-        # Stack all scores into a single array
-        score_list = np.stack(scores, axis=2)
-
-        t_1, t_2 = np.meshgrid(t, t)
-        return score_list, t_1, t_2
-
-    def S_threshold(self, S, thres):
-        return np.where(np.abs(S) < thres, 1, 0)
-
-    def R_threshold(self, R, thres):
-        return np.where(R > thres, 1, 0)
-
-    def plot_trs_heatmap(self):
-        if 'TRS_total' not in self.results:
-            print("Please run the analysis first.")
-            return
-
-        TRS_total = self.results['TRS_total']
-        component_list = self.results['component_list']
-
-        plt.figure(figsize=(10, 8))
-        plt.imshow(TRS_total, aspect='auto', cmap='Blues_r', vmin=0, vmax=1)
-        plt.colorbar()
-
-        for i in range(TRS_total.shape[0] + 1):
-            plt.axhline(y=i - 0.5, color='black', linewidth=1)
-        for i in range(TRS_total.shape[1] + 1):
-            plt.axvline(x=i - 0.5, color='black', linewidth=1)
-
-        plt.title(f'Heatmap of TRS (Dimension {self.dimension} Analysis)')
-        plt.xlabel('Regulation Type')
-        plt.ylabel('Component Combinations')
-
-        # Create labels based on dimension
-        if self.dimension == 1:
-            y_labels = [f"{combo[0]} -> {combo[1]}" for combo in component_list]
-            x_labels = ['Positive', 'Negative']
-        elif self.dimension == 2:
-            y_labels = [f"({combo[0]},{combo[1]}) -> {combo[2]}" for combo in component_list]
-            x_labels = ['++', '+-', '-+', '--']  # Four regulation types for dimension 2
-
-        plt.yticks(range(len(y_labels)), y_labels)
-        plt.xticks(range(len(x_labels)), x_labels)
-
-        plt.tight_layout()
-        plt.show()
-
-    def plot_time_series(self):
-        if 'y_total' not in self.data:
-            print("Please run preprocessing first.")
-            return
-
-        y_total = self.data['y_total']  # Windowed data
-        t = self.data['t']  # Time points within a window
-        num_windows = len(y_total)
-
-        # Concatenate windowed data for plotting
-        y_fit = np.concatenate(y_total, axis=0)
-        t_fit = np.tile(t, num_windows)  # Repeat time points for each window
-        t_fit = t_fit + np.repeat(np.arange(num_windows) * (len(t) - int(len(t) * self.params['overlapping_ratio'])), len(t))
-
-        plt.figure(figsize=(12, 6))
-        plt.plot(t_fit, y_fit, 'b-', linewidth=1, label='Windowed Data')  # Plot windowed data
-        plt.title('Time Series: Windowed Data')  # Update title
-        plt.xlabel('Time')
-        plt.ylabel('Value')  # Use 'Value' for windowed data
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-    def plot_rds_scores_time_windows(self, component_indices=None, regulation_types=None, max_windows=None):
-        """
-        Plot RDS across time windows for selected components and regulation types.
-
-        Parameters:
-        -----------
-        component_indices : list or None
-            Indices of components to plot. If None, plot all components.
-        regulation_types : list or None
-            Indices of regulation types to plot. If None, plot all types.
-        max_windows : int or None
-            Maximum number of time windows to plot. If None, plot all windows.
-        """
-        if 'TRS_total' not in self.results:
-            print("Please run the analysis first.")
-            return
-
-        S_total_list = self.results.get('S_total_list', None)
-        R_total_list = self.results.get('R_total_list', None)
-
-        if S_total_list is None or R_total_list is None:
-            print("S_total_list or R_total_list not found in results. Ensure you're storing these in the results dictionary.")
-            return
-
-        component_list = self.results['component_list']
-        num_windows = S_total_list.shape[2]
-
-        # If no specific components selected, plot all
-        if component_indices is None:
-            component_indices = range(len(component_list))
-
-        # If no specific regulation types selected, plot all
-        if regulation_types is None:
-            regulation_types = range(2**self.dimension)
-
-        # Limit the number of windows if specified
-        if max_windows is not None and max_windows < num_windows:
-            windows_to_plot = np.linspace(0, num_windows-1, max_windows, dtype=int)
-        else:
-            windows_to_plot = range(num_windows)
-
-        # Create labels for regulation types
-        if self.dimension == 1:
-            reg_type_labels = ['Positive', 'Negative']
-        elif self.dimension == 2:
-            reg_type_labels = ['++', '+-', '-+', '--']
-        elif self.dimension == 3:
-            reg_type_labels = ['+++', '++-', '+-+', '+--', '-++', '-+-', '--+', '---']
-        else:
-            reg_type_labels = [f'Type {i}' for i in range(2**self.dimension)]
-
-        # Create subplot grid
-        n_components = len(component_indices)
-        n_reg_types = len(regulation_types)
-
-        fig, axes = plt.subplots(n_components, n_reg_types, figsize=(4*n_reg_types, 3*n_components),
-                                sharex=True, sharey=True)
-
-        # Adjust axes for single component or regulation type
-        if n_components == 1 and n_reg_types == 1:
-            axes = np.array([[axes]])
-        elif n_components == 1:
-            axes = axes.reshape(1, -1)
-        elif n_reg_types == 1:
-            axes = axes.reshape(-1, 1)
-
-        # Plot each component and regulation type
-        for i, comp_idx in enumerate(component_indices):
-            combo = component_list[comp_idx]
-            if self.dimension == 1:
-                combo_label = f"{combo[0]} -> {combo[1]}"
-            else:
-                cause_str = ','.join(str(c) for c in combo[:-1])
-                combo_label = f"({cause_str}) -> {combo[-1]}"
-
-            for j, reg_type in enumerate(regulation_types):
-                ax = axes[i, j]
-
-                # Extract S and R values for this component and regulation type across windows
-                S_values = S_total_list[comp_idx, reg_type, windows_to_plot]
-                R_values = R_total_list[comp_idx, reg_type, windows_to_plot]
-
-                # Plot S values
-                ax.plot(windows_to_plot, S_values, 'b-', label='S Score')
-                ax.set_ylim(-1.1, 1.1)
-                ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
-
-                # Plot R values on a second y-axis
-                ax2 = ax.twinx()
-                ax2.plot(windows_to_plot, R_values, 'r-', label='R Score')
-                ax2.set_ylim(0, 1.1)
-
-                # Set titles and labels
-                if i == 0:
-                    ax.set_title(f'Type: {reg_type_labels[reg_type]}')
-                if j == 0:
-                    ax.set_ylabel(f'S Score\n{combo_label}')
-                if j == n_reg_types - 1:
-                    ax2.set_ylabel('R Score')
-                if i == n_components - 1:
-                    ax.set_xlabel('Time Window')
-
-        # Add a legend
-        lines1, labels1 = axes[0, 0].get_legend_handles_labels()
-        lines2, labels2 = axes[0, 0].get_figure().axes[1].get_legend_handles_labels()
-        fig.legend(lines1 + lines2, labels1 + labels2, loc='upper center', bbox_to_anchor=(0.5, 0.05), ncol=2)
-
-        plt.tight_layout(rect=[0, 0.1, 1, 0.95])
-        plt.suptitle(f'RDS Scores Across Time Windows (Dimension {self.dimension})', fontsize=16)
-        plt.subplots_adjust(hspace=0.3, wspace=0.4)
-        plt.show()
-
-    def plot_rds_component_comparison(self, component_indices=None, max_windows=None):
-        """
-        Plot S-scores for different regulation types together for each component.
-
-        Parameters:
-        -----------
-        component_indices : list or None
-            Indices of components to plot. If None, plot all components.
-        max_windows : int or None
-            Maximum number of time windows to plot. If None, plot all windows.
-        """
-        if 'S_total_list' not in self.results:
-            print("Please run the analysis first.")
-            return
-
-        S_total_list = self.results['S_total_list']
-        component_list = self.results['component_list']
-        num_windows = S_total_list.shape[2]
-        num_types = 2**self.dimension
-
-        # If no specific components selected, plot all
-        if component_indices is None:
-            component_indices = range(len(component_list))
-
-        # Limit the number of windows if specified
-        if max_windows is not None and max_windows < num_windows:
-            windows_to_plot = np.linspace(0, num_windows-1, max_windows, dtype=int)
-        else:
-            windows_to_plot = range(num_windows)
-
-        # Create labels for regulation types
-        if self.dimension == 1:
-            reg_type_labels = ['Positive', 'Negative']
-            colors = ['blue', 'red']
-        elif self.dimension == 2:
-            reg_type_labels = ['++', '+-', '-+', '--']
-            colors = ['blue', 'green', 'orange', 'red']
-        else:
-            reg_type_labels = [f'Type {i}' for i in range(num_types)]
-            colors = plt.cm.tab10(np.linspace(0, 1, num_types))
-
-        # Create subplots, one for each component
-        n_components = len(component_indices)
-        fig, axes = plt.subplots(n_components, 1, figsize=(10, 4*n_components), sharex=True)
-
-        # Handle single component case
-        if n_components == 1:
-            axes = [axes]
-
-        # Plot each component
-        for i, comp_idx in enumerate(component_indices):
-            ax = axes[i]
-            combo = component_list[comp_idx]
-
-            # Create component label
-            if self.dimension == 1:
-                combo_label = f"{combo[0]} -> {combo[1]}"
-            else:
-                cause_str = ','.join(str(c) for c in combo[:-1])
-                combo_label = f"({cause_str}) -> {combo[-1]}"
-
-            # Plot each regulation type
-            for reg_type in range(num_types):
-                # Extract S values for this component and regulation type
-                S_values = S_total_list[comp_idx, reg_type, windows_to_plot]
-
-                # Plot S values
-                ax.plot(windows_to_plot, S_values, color=colors[reg_type],
-                        label=reg_type_labels[reg_type], linewidth=2)
-
-            # Add zero line
-            ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
-
-            # Set labels and title
-            ax.set_ylabel('S-Score')
-            ax.set_title(f'Component: {combo_label}')
-            ax.set_ylim(-1.1, 1.1)
-            ax.legend(loc='upper right')
-            ax.grid(True, alpha=0.3)
-
-        # Set x-axis label for bottom subplot
-        axes[-1].set_xlabel('Time Window')
-
-        plt.tight_layout()
-        plt.suptitle(f'RDS S-Scores by Regulation Type (Dimension {self.dimension})', fontsize=16, y=1.02)
-        plt.show()
-
-    def plot_time_window_segmentation(self, component_indices=None, max_windows=5):
-        """
-        Visualize the time window segmentation of the data.
-
-        Parameters:
-        -----------
-        component_indices : list or None
-            Indices of components to plot. If None, plot first component.
-        max_windows : int
-            Maximum number of time windows to plot.
-        """
-        if 'y_total' not in self.data:
-            print("Please run preprocessing first.")
-            return
-
-        y_total = self.data['y_total']
-        num_windows = len(y_total)
-
-        # If no specific components selected, plot the first component
-        if component_indices is None:
-            component_indices = [0]
-
-        # Select a subset of windows to plot
-        if max_windows > num_windows:
-            max_windows = num_windows
-
-        window_indices = np.linspace(0, num_windows-1, max_windows, dtype=int)
-
-        # Create a grid of subplots
-        fig, axes = plt.subplots(len(component_indices), max_windows,
-                                figsize=(4*max_windows, 3*len(component_indices)),
-                                sharex=True, sharey=True)
-
-        # Adjust axes for single component or window
-        if len(component_indices) == 1 and max_windows == 1:
-            axes = np.array([[axes]])
-        elif len(component_indices) == 1:
-            axes = axes.reshape(1, -1)
-        elif max_windows == 1:
-            axes = axes.reshape(-1, 1)
-
-        # Plot each component and window
-        for i, comp_idx in enumerate(component_indices):
-            for j, win_idx in enumerate(window_indices):
-                ax = axes[i, j]
-
-                # Extract data for this component and window
-                window_data = y_total[win_idx][:, comp_idx]
-
-                # Plot the data
-                ax.plot(window_data)
-
-                # Set titles and labels
-                if i == 0:
-                    ax.set_title(f'Window {win_idx+1}')
-                if j == 0:
-                    ax.set_ylabel(f'Component {comp_idx+1}')
-                if i == len(component_indices) - 1:
-                    ax.set_xlabel('Time')
-
-        plt.tight_layout()
-        plt.suptitle('Time Window Segmentation Visualization', fontsize=16)
-        plt.show()
-
-    def get_component_label(self, component):
-        """Generate a readable label for a component combination."""
-        if self.dimension == 1:
-            return f"{component[0]}->{component[1]}"
-        else:
-            causes = ','.join(str(c) for c in component[:-1])
-            target = component[-1]
-            return f"({causes})->{target}"
-
-    def plot_s_score_heatmap(self, component_indices=None):
-        """
-        Plot S-scores as a heatmap for each component across time windows.
-
-        Parameters:
-        -----------
-        component_indices : list or None
-            Indices of components to plot. If None, plot all components.
-        """
-        if 'S_total_list' not in self.results:
-            print("Please run the analysis first.")
-            return
-
-        S_total_list = self.results['S_total_list']
-        component_list = self.results['component_list']
-
-        # If no specific components selected, plot all
-        if component_indices is None:
-            component_indices = range(len(component_list))
-
-        num_windows = S_total_list.shape[2]
-        num_types = 2**self.dimension
-
-        # Create labels for regulation types
-        if self.dimension == 1:
-            reg_type_labels = ['Positive', 'Negative']
-        elif self.dimension == 2:
-            reg_type_labels = ['++', '+-', '-+', '--']
-        else:
-            reg_type_labels = [f'Type {i}' for i in range(num_types)]
-
-        # Create subplots, one for each component
-        n_components = len(component_indices)
-        fig, axes = plt.subplots(n_components, 1, figsize=(12, 3*n_components))
-
-        # Handle single component case
-        if n_components == 1:
-            axes = [axes]
-
-        # Plot each component
-        for i, comp_idx in enumerate(component_indices):
-            ax = axes[i]
-            combo = component_list[comp_idx]
-
-            # Create component label
-            if self.dimension == 1:
-                combo_label = f"{combo[0]} -> {combo[1]}"
-            else:
-                cause_str = ','.join(str(c) for c in combo[:-1])
-                combo_label = f"({cause_str}) -> {combo[-1]}"
-
-            # Extract S values for all regulation types
-            data = S_total_list[comp_idx, :, :]
-
-            # Plot as heatmap
-            im = ax.imshow(data, aspect='auto', cmap='RdBu_r', vmin=-1, vmax=1,
-                          interpolation='none', extent=[0, num_windows, num_types, 0])
-
-            # Add colorbar
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("right", size="2%", pad=0.05)
-            plt.colorbar(im, cax=cax)
-
-            # Set y-ticks to regulation types
-            ax.set_yticks(np.arange(0.5, num_types))
-            ax.set_yticklabels(reg_type_labels)
-
-            # Set title
-            ax.set_title(f'Component: {combo_label}')
-
-            # Set labels
-            ax.set_ylabel('Regulation Type')
-            if i == n_components - 1:
-                ax.set_xlabel('Time Window')
-
-        plt.tight_layout()
-        plt.suptitle(f'S-Score Heatmap Across Time Windows (Dimension {self.dimension})', fontsize=16, y=1.02)
-        plt.show()
-
-    def get_regulation_label(self, regulation_idx):
-        """Generate a readable label for a regulation type."""
-        if self.dimension == 1:
-            return ["Pos", "Neg"][regulation_idx]
-        elif self.dimension == 2:
-            return ["++", "+-", "-+", "--"][regulation_idx]
-        else:
-            # Convert index to binary representation
-            binary = format(regulation_idx, f'0{self.dimension}b')
-            return binary
-
-    def save_results(self, filename):
-        np.save(filename, self.results)
-        print(f"Results saved to {filename}")
-
-    def load_results(self, filename):
-        self.results = np.load(filename, allow_pickle=True).item()
-        print(f"Results loaded from {filename}")
-
 class CausalFilter:
     """
     A class for filtering causal inference results using TRS (Total Regulation Score) data.
@@ -1153,17 +1156,25 @@ class CausalFilter:
             p_delta: P-value threshold for delta test.
             p_surrogate: P-value threshold for surrogate test.
         """
-        self.causal_inference = causal_inference
-        self.thres_S = thres_S
-        self.thres_R = thres_R
-        self.thres_TRS = thres_TRS
-        self.p_delta = p_delta
-        self.p_surrogate = p_surrogate
+        self._ci = causal_inference
+        self._thres_S = thres_S
+        self._thres_R = thres_R
+        self._thres_TRS = thres_TRS
+        self._p_delta = p_delta
+        self._p_surrogate = p_surrogate
 
         # Initialize data structures
-        self.TRS_total = None
-        self.delta_results = None
-        self.surrogate_results = None
+        self._TRS_total = None
+        self._delta_results = None
+        self._surrogate_results = None
+
+    @property
+    def results(self):
+        return {
+            'TRS_total': self._TRS_total,
+            'delta_results': self._delta_results,
+            'surrogate_results': self._surrogate_results
+        }
 
     def compute_TRS(self) -> np.ndarray:
         """
@@ -1175,8 +1186,8 @@ class CausalFilter:
         start_time = time.time()
 
         # Access data from the CausalInference instance
-        S_total_list = self.causal_inference.results.get('S_total_list')
-        R_total_list = self.causal_inference.results.get('R_total_list')
+        S_total_list = self._ci._results.get('S_total_list')
+        R_total_list = self._ci._results.get('R_total_list')
         if S_total_list is None or R_total_list is None:
             raise ValueError("CausalInference results are incomplete. Please run the analysis first.")
 
@@ -1192,8 +1203,8 @@ class CausalFilter:
                 R_tmp = R_total_list[i, j, :]
 
                 # Apply thresholds
-                S_processed = self.S_threshold(S_tmp, self.thres_S)
-                R_processed = self.R_threshold(R_tmp, self.thres_R)
+                S_processed = self.S_threshold(S_tmp, self._thres_S)
+                R_processed = self.R_threshold(R_tmp, self._thres_R)
 
                 # Calculate TRS
                 if np.sum(R_processed) == 0:
@@ -1201,7 +1212,7 @@ class CausalFilter:
                 else:
                     TRS_total[i, j] = np.sum(S_processed * R_processed) / np.sum(R_processed)
 
-        self.TRS_total = TRS_total
+        self._TRS_total = TRS_total
         print(f"TRS computation completed in {time.time() - start_time:.2f} seconds")
 
         return TRS_total
@@ -1241,19 +1252,19 @@ class CausalFilter:
         Returns:
             Dictionary containing delta test results.
         """
-        if self.TRS_total is None:
+        if self._TRS_total is None:
             self.compute_TRS()
 
         # Find candidates for delta test
-        candidate_indices = np.where(self.TRS_total > self.thres_TRS)
+        candidate_indices = np.where(self._TRS_total > self._thres_TRS)
         pair_indices = candidate_indices[0]
         type_indices = candidate_indices[1]
 
         delta_list = []
         for pair_idx, type_idx in zip(pair_indices, type_indices):
             # Extract S and R values for the candidate
-            S_values = self.causal_inference.results['S_total_list'][pair_idx, type_idx, :]
-            R_values = self.causal_inference.results['R_total_list'][pair_idx, type_idx, :]
+            S_values = self._ci._results['S_total_list'][pair_idx, type_idx, :]
+            R_values = self._ci._results['R_total_list'][pair_idx, type_idx, :]
 
             # Perform delta test (e.g., Wilcoxon signed-rank test)
             delta = S_values * R_values
@@ -1262,8 +1273,8 @@ class CausalFilter:
             delta_list.append((pair_idx, type_idx, p_value))
 
         # Filter results based on p_delta threshold
-        delta_results = [d for d in delta_list if d[2] <= self.p_delta]
-        self.delta_results = delta_results
+        delta_results = [d for d in delta_list if d[2] <= self._p_delta]
+        self._delta_results = delta_results
 
         print(f"Delta test completed. Found {len(delta_results)} significant candidates.")
         return {'delta_results': delta_results}
@@ -1278,14 +1289,14 @@ class CausalFilter:
         Returns:
             Dictionary containing surrogate test results.
         """
-        if self.delta_results is None:
+        if self._delta_results is None:
             self.run_delta_test()
 
         surrogate_results = []
-        for pair_idx, type_idx, _ in self.delta_results:
+        for pair_idx, type_idx, _ in self._delta_results:
             # Extract S and R values for the candidate
-            S_values = self.causal_inference.results['S_total_list'][pair_idx, type_idx, :]
-            R_values = self.causal_inference.results['R_total_list'][pair_idx, type_idx, :]
+            S_values = self._ci._results['S_total_list'][pair_idx, type_idx, :]
+            R_values = self._ci._results['R_total_list'][pair_idx, type_idx, :]
 
             # Perform surrogate test (e.g., bootstrap)
             surrogate_p_values = []
@@ -1300,8 +1311,8 @@ class CausalFilter:
             surrogate_results.append((pair_idx, type_idx, mean_p_value))
 
         # Filter results based on p_surrogate threshold
-        significant_results = [s for s in surrogate_results if s[2] <= self.p_surrogate]
-        self.surrogate_results = significant_results
+        significant_results = [s for s in surrogate_results if s[2] <= self._p_surrogate]
+        self._surrogate_results = significant_results
 
         print(f"Surrogate test completed. Found {len(significant_results)} significant candidates.")
         return {'surrogate_results': significant_results}
@@ -1326,9 +1337,9 @@ class CausalFilter:
 
         print("Pipeline completed!")
         return {
-            'TRS_results': self.TRS_total,
-            'delta_results': self.delta_results,
-            'surrogate_results': self.surrogate_results
+            'TRS_results': self._TRS_total,
+            'delta_results': self._delta_results,
+            'surrogate_results': self._surrogate_results
         }
 
 def main():
@@ -1402,23 +1413,23 @@ def main():
         viz_choice = int(viz_choice)
 
         if viz_choice == 1 or viz_choice == 7:
-            ci.plot_trs_heatmap()
+            ci._visualizer.plot_trs_heatmap()
         if viz_choice == 2 or viz_choice == 7:
-            ci.plot_time_series()
+            ci._visualizer.plot_time_series()
         if viz_choice == 3 or viz_choice == 7:
             # Ask for specific components to visualize
             comp_input = input("Enter component indices to visualize (comma-separated) or press 0 for all: ")
             if comp_input:
                 comp_indices = [int(idx) for idx in comp_input.split(',')]
-                ci.plot_rds_scores_time_windows(component_indices=comp_indices)
+                ci._visualizer.plot_rds_scores_time_windows(component_indices=comp_indices)
             else:
-                ci.plot_rds_scores_time_windows()
+                ci._visualizer.plot_rds_scores_time_windows()
         if viz_choice == 4 or viz_choice == 7:
-            ci.plot_rds_component_comparison()
+            ci._visualizer.plot_rds_component_comparison()
         if viz_choice == 5 or viz_choice == 7:
-            ci.plot_time_window_segmentation()
+            ci._visualizer.plot_time_window_segmentation()
         if viz_choice == 6 or viz_choice == 7:
-            ci.plot_s_score_heatmap()
+            ci._visualizer.plot_s_score_heatmap()
     else:
         print("Invalid visualization choice. Please enter a number between 1 and 7.")
     
