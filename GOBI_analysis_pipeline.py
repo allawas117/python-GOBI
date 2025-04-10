@@ -1197,8 +1197,6 @@ class CausalFilter:
             raise ValueError("CausalInference results are incomplete")
 
         num_pair, num_type, num_data = S_total_list.shape
-        
-        # Initialize TRS matrix with NaN
         TRS_total = np.full((num_pair, num_type), np.nan)
 
         for i in range(num_pair):
@@ -1206,22 +1204,19 @@ class CausalFilter:
                 S_tmp = S_total_list[i, j, :]  
                 R_tmp = R_total_list[i, j, :]
                 
-                # Process S and R values
-                S_processed = (np.abs(S_tmp) >= self._thres_S).astype(float)
                 R_processed = (R_tmp >= self._thres_R).astype(float)
-                
                 R_sum = np.sum(R_processed)
+                
                 if R_sum == 0:
                     TRS_total[i, j] = np.nan
                 else:
-                    # Calculate TRS as ratio of significant regions
+                    S_processed = (np.abs(S_tmp) >= self._thres_S).astype(float)
                     TRS_total[i, j] = np.sum(S_processed * R_processed) / R_sum
 
         self._TRS_total = TRS_total
         
-        # Create regulation matrix (1 where TRS >= threshold)
         regulation = np.zeros((num_pair, num_type))
-        regulation[~np.isnan(TRS_total) & (np.abs(TRS_total) >= self._thres_TRS)] = 1
+        regulation[~np.isnan(TRS_total) & (TRS_total >= self._thres_TRS)] = 1
 
         return {
             'TRS_total': TRS_total,
