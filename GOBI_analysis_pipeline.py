@@ -455,7 +455,6 @@ class CausalInference:
                 # Use the generalized RDS function
                 score_list, t_1, t_2 = self.RDS_dimN(X_list, Y, t_target, self._params['time_interval'])
 
-                # Calculate S and R values as before
                 for k in range(num_type):
                     score = score_list[:, :, k]
                     loca_plus = np.where(score > self._params['thres_noise'])
@@ -499,7 +498,7 @@ class CausalInference:
         f_mesh, f_mesh_transpose = np.meshgrid(f, f)
         f_diff = f_mesh_transpose - f_mesh
 
-        # Number of regulation types: 2^dimension
+        # Number of regulation types: 2^self._dimension
         num_types = 2**self._dimension
 
         # Initialize scores array with zeros
@@ -1217,16 +1216,15 @@ class CausalFilter:
                 S_tmp = S_total_list[i, j, :].reshape(num_data, 1)
                 R_tmp = R_total_list[i, j, :].reshape(num_data, 1)
                 
-                # Process S and R values according to MATLAB implementation
                 S_processed = (np.abs(S_tmp) >= self._thres_S).astype(float)
                 R_processed = (R_tmp >= self._thres_R).astype(float)
                 
-                # Calculate TRS exactly as in MATLAB
                 R_sum = np.sum(R_processed)
                 if R_sum == 0:
                     TRS_total[i, j] = np.nan
                 else:
-                    TRS_total[i, j] = np.sum(S_processed * R_processed) / R_sum
+                    # Important: Use the raw S values for sign, but processed values for magnitude
+                    TRS_total[i, j] = np.sum(np.sign(S_tmp) * S_processed * R_processed) / R_sum
 
         self._TRS_total = TRS_total
         
