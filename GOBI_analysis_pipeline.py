@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from itertools import combinations
 from tqdm import tqdm
 import scipy.io
+from scipy import stats
 # from numba import jit
 from joblib import Parallel, delayed
 import time
@@ -481,7 +482,8 @@ class CausalInference:
 
     def RDS_dimN(self, X_list, Y, t, time_interval):
         """
-        Generalized RDS (Regulation Detection Scoring) for dimension N.
+        Generalized RDS (Regulation Detection Scores) for dimension N.
+        
         """
         # Calculate gradient of target variable
         f = np.gradient(Y, time_interval, edge_order=1)
@@ -496,35 +498,26 @@ class CausalInference:
         f_mesh, f_mesh_transpose = np.meshgrid(f, f)
         f_diff = f_mesh_transpose - f_mesh
 
-        num_types = 2**self._dimension
+        num_types = 2**len(X_list)  # Number of regulation types
         score_list = np.zeros((len(t), len(t), num_types))
-        
-        # For each regulation type
+        t_1, t_2 = np.meshgrid(t, t)
+
+        # Iterate over all regulation types
         for i in range(num_types):
             # Convert type index to binary pattern
-            pattern = [(i >> j) & 1 for j in range(self._dimension)]
-            
-            # Initialize combined mask for this regulation type
-            mask = np.ones_like(f_diff, dtype=bool)
-            base_score = f_diff.copy()
-            
-            # Process each cause based on regulation type
-            for idx, (is_negative, X_diff) in enumerate(zip(pattern, X_diffs)):
-                if is_negative:
-                    # Negative regulation: X↓ => Y↑ or X↑ => Y↓
-                    condition = X_diff < 0
-                    base_score *= -X_diff  # Note the negative sign
-                else:
-                    # Positive regulation: X↑ => Y↑ or X↓ => Y↓
-                    condition = X_diff >= 0
-                    base_score *= X_diff
-                
-                mask &= condition
-            
-            # Apply mask and store score
-            score_list[:, :, i] = np.where(mask, base_score, 0)
+            pattern = [(i >> j) & 1 for j in range(len(X_list))]
 
-        t_1, t_2 = np.meshgrid(t, t)
+            # Initialize score_tmp as the product of all differences
+            score_tmp = f_diff.copy()
+            for idx, X_diff in enumerate(X_diffs):
+                if pattern[idx] == 0:  # Positive regulation
+                    score_tmp *= X_diff
+                else:  # Negative regulation
+                    score_tmp *= -X_diff
+
+            # Assign scores to the corresponding regulation type
+            score_list[:, :, i] = score_tmp
+
         return score_list, t_1, t_2
 
     def S_threshold(self, S_values: np.ndarray, threshold: float) -> np.ndarray:
