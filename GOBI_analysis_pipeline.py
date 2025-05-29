@@ -9,6 +9,7 @@ from joblib import Parallel, delayed
 import time
 import os
 import pandas as pd
+import networkx as nx
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -531,7 +532,7 @@ class CausalInference:
         Returns:
             Processed S values (1 where |S| >= threshold, 0 otherwise)
         """
-        return (np.abs(S_values) >= threshold).astype(float)
+        return (S_values >= threshold).astype(float)
 
     def R_threshold(self, R_values: np.ndarray, threshold: float) -> np.ndarray:
         """
@@ -1340,6 +1341,73 @@ class CausalFilter:
             'delta_results': self._delta_results,
             'surrogate_results': self._surrogate_results
         }
+    
+    def visualize_network(self):
+        """
+        Visualize the resulting network based on significant regulations.
+
+        Uses NetworkX to create a directed graph showing positive and negative regulations.
+
+        Returns:
+            None
+        """
+        if self._surrogate_results is None:
+            print("No surrogate results found. Please run the full pipeline first.")
+            return
+
+        # Create a directed graph
+        G = nx.DiGraph()
+
+        # Extract component list and dimension
+        component_list = self._ci._results['component_list']
+        dimension = self._ci._dimension
+
+        # Add nodes and edges based on surrogate results
+        for pair_idx, type_idx, mean_p_value in self._surrogate_results:
+            if mean_p_value <= self._p_surrogate:
+                # Extract causes and target
+                combo = component_list[pair_idx]
+                causes = combo[:-1]
+                target = combo[-1]
+
+                # Determine regulation type (positive or negative)
+                regulation_type = bin(type_idx)[2:].zfill(dimension)  # Binary representation of type_idx
+
+                # Add nodes for causes and target
+                for cause in causes:
+                    G.add_node(cause)
+                G.add_node(target)
+
+                # Add edges based on regulation type
+                for i, cause in enumerate(causes):
+                    if regulation_type[i] == '0':  # Positive regulation
+                        G.add_edge(cause, target, regulation='positive')
+                    else:  # Negative regulation
+                        G.add_edge(cause, target, regulation='negative')
+
+        # Draw the graph
+        pos = nx.spring_layout(G)  # Layout for visualization
+        plt.figure(figsize=(10, 8))
+
+        # Draw nodes
+        nx.draw_networkx_nodes(G, pos, node_size=700, node_color='lightblue')
+
+        # Draw edges with different styles for positive and negative regulations
+        positive_edges = [(u, v) for u, v, d in G.edges(data=True) if d['regulation'] == 'positive']
+        negative_edges = [(u, v) for u, v, d in G.edges(data=True) if d['regulation'] == 'negative']
+
+        nx.draw_networkx_edges(G, pos, edgelist=positive_edges, edge_color='green', arrows=True)
+        nx.draw_networkx_edges(G, pos, edgelist=negative_edges, edge_color='red', arrows=False, style='dashed')
+
+        # Draw labels
+        nx.draw_networkx_labels(G, pos, font_size=12, font_color='black')
+
+        # Add legend
+        plt.legend(['Positive Regulation', 'Negative Regulation'], loc='upper left')
+
+        plt.title(f'Causal Network Visualization (Dimension {dimension})')
+        plt.axis('off')
+        plt.show()
 
 def main():
     ci = CausalInference()
